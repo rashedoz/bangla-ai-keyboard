@@ -1,0 +1,13 @@
+# Build output
+build/
+DerivedData/
+BanglaKit/.build/
+BanglaKit/.swiftpm/
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# macOS
+.DS_Store
