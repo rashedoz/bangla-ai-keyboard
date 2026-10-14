@@ -2,8 +2,8 @@ import Foundation
 
 /// Identifiers shared by the host app and the keyboard extension.
 public enum SharedConfig {
-    public static let appGroup = "group.com.miraidev.BanglaKeyboard"
-    public static let keychainService = "com.miraidev.BanglaKeyboard"
+    public static let appGroup = "group.com.mirailit.BanglaKeyboard"
+    public static let keychainService = "com.mirailit.BanglaKeyboard"
     public static let apiKeyAccount = "openai_api_key"
 
     /// Keychain access group including the team prefix. Injected through the

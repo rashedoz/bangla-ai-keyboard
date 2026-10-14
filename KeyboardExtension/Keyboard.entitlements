@@ -4,11 +4,11 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.miraidev.BanglaKeyboard</string>
+		<string>group.com.mirailit.BanglaKeyboard</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.miraidev.BanglaKeyboard.shared</string>
+		<string>$(AppIdentifierPrefix)com.mirailit.BanglaKeyboard.shared</string>
 	</array>
 </dict>
 </plist>

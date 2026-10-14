@@ -21,7 +21,7 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>KeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)com.miraidev.BanglaKeyboard.shared</string>
+	<string>$(AppIdentifierPrefix)com.mirailit.BanglaKeyboard.shared</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>

@@ -27,7 +27,7 @@ xcodegen generate
 open BanglaKeyboard.xcodeproj
 ```
 
-Set your team in `DEVELOPMENT_TEAM` in `project.yml` (then re-run `xcodegen generate`). The app and keyboard share the API key through an App Group (`group.com.miraidev.BanglaKeyboard`) and a Keychain access group, so both targets need signing with the same team.
+Set your team in `DEVELOPMENT_TEAM` in `project.yml` (then re-run `xcodegen generate`). The app and keyboard share the API key through an App Group (`group.com.mirailit.BanglaKeyboard`) and a Keychain access group, so both targets need signing with the same team.
 
 Run the logic tests:
 
