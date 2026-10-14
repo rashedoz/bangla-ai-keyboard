@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var keyClicks = true
     @State private var haptics = true
     @State private var spaceAfterInsert = true
+    @State private var livePreview = true
 
     @State private var testInput = "ami bhat khai"
     @State private var testOutput: String?
@@ -91,10 +92,15 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Keyboard") {
+                Section {
+                    Toggle("Live preview while typing", isOn: $livePreview)
                     Toggle("Key click sounds", isOn: $keyClicks)
                     Toggle("Haptic feedback", isOn: $haptics)
                     Toggle("Add space after inserting", isOn: $spaceAfterInsert)
+                } header: {
+                    Text("Keyboard")
+                } footer: {
+                    Text("Live preview converts in the background each time you pause, so Insert is instant. It sends a request per pause, which uses a little more of your OpenAI quota.")
                 }
             }
             .navigationTitle("Settings")
@@ -108,6 +114,7 @@ struct SettingsView: View {
             .onChange(of: keyClicks) { _, value in settings.keyClicks = value }
             .onChange(of: haptics) { _, value in settings.haptics = value }
             .onChange(of: spaceAfterInsert) { _, value in settings.spaceAfterInsert = value }
+            .onChange(of: livePreview) { _, value in settings.livePreview = value }
         }
     }
 
@@ -123,6 +130,7 @@ struct SettingsView: View {
         keyClicks = settings.keyClicks
         haptics = settings.haptics
         spaceAfterInsert = settings.spaceAfterInsert
+        livePreview = settings.livePreview
     }
 
     private func saveKey() {

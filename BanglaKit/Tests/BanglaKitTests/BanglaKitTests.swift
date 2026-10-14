@@ -172,6 +172,109 @@ final class ComposerStateTests: XCTestCase {
     }
 }
 
+final class LivePreviewTests: XCTestCase {
+    private func typed(_ text: String) -> ComposerState {
+        var state = ComposerState()
+        for ch in text { _ = state.type(String(ch)) }
+        return state
+    }
+
+    func testFreshPreviewInsertsWithoutNetwork() {
+        var state = typed("ami bhat khai")
+        guard case let .preview(text, id) = state.requestPreview() else { return XCTFail("expected preview") }
+        XCTAssertEqual(text, "ami bhat khai")
+        XCTAssertEqual(state.requestPreview(), .none, "no duplicate request for the same text")
+
+        state.previewProgress("আমি ভাত", requestID: id)
+        XCTAssertFalse(state.isPreviewFresh, "partial preview is not insertable yet")
+        XCTAssertEqual(state.returnLabel, "Convert")
+
+        state.previewSucceeded("আমি ভাত খাই।", requestID: id)
+        XCTAssertTrue(state.isPreviewFresh)
+        XCTAssertEqual(state.returnLabel, "Insert")
+        XCTAssertEqual(state.returnKey(), .insert("আমি ভাত খাই।"))
+        XCTAssertEqual(state.source, "")
+        XCTAssertEqual(state.preview, "")
+    }
+
+    func testTypingMakesPreviewStaleAndConvertGoesToNetwork() {
+        var state = typed("ami")
+        guard case let .preview(_, id) = state.requestPreview() else { return XCTFail() }
+        state.previewSucceeded("আমি", requestID: id)
+        _ = state.type(" bhat")
+        XCTAssertFalse(state.isPreviewFresh)
+        XCTAssertEqual(state.preview, "আমি", "stale preview stays visible until the new one arrives")
+        guard case .convert(let text, _) = state.convert() else { return XCTFail("stale preview must not be used") }
+        XCTAssertEqual(text, "ami bhat")
+    }
+
+    func testConvertUsesFreshPreviewInstantly() {
+        var state = typed("ami")
+        guard case let .preview(_, id) = state.requestPreview() else { return XCTFail() }
+        state.previewSucceeded("আমি", requestID: id)
+        XCTAssertEqual(state.convert(), .none)
+        XCTAssertEqual(state.phase, .result)
+        XCTAssertEqual(state.result, "আমি")
+    }
+
+    func testEditPreviewOpensEditor() {
+        var state = typed("ami")
+        guard case let .preview(_, id) = state.requestPreview() else { return XCTFail() }
+        state.previewSucceeded("আমি", requestID: id)
+        state.editPreview()
+        XCTAssertEqual(state.phase, .editing)
+        XCTAssertEqual(state.result, "আমি")
+    }
+
+    func testSupersededAndClearedPreviewsAreIgnored() {
+        var state = typed("ami")
+        guard case let .preview(_, first) = state.requestPreview() else { return XCTFail() }
+        _ = state.type(" bhat")
+        guard case let .preview(_, second) = state.requestPreview() else { return XCTFail() }
+        state.previewSucceeded("আমি", requestID: first)
+        XCTAssertEqual(state.preview, "", "older request ignored")
+        state.previewSucceeded("আমি ভাত", requestID: second)
+        XCTAssertTrue(state.isPreviewFresh)
+
+        for _ in 0..<8 { _ = state.backspace() }
+        XCTAssertEqual(state.source, "")
+        XCTAssertEqual(state.preview, "", "emptying the input clears the preview")
+    }
+
+    func testStreamingConversionShowsPartialResult() {
+        var state = typed("ami")
+        guard case let .convert(_, id) = state.convert() else { return XCTFail() }
+        state.conversionProgress("আম", requestID: id)
+        XCTAssertEqual(state.result, "আম")
+        XCTAssertEqual(state.phase, .converting)
+        state.conversionSucceeded("আমি", requestID: id)
+        XCTAssertEqual(state.phase, .result)
+    }
+}
+
+final class StreamParsingTests: XCTestCase {
+    func testStreamEvents() {
+        XCTAssertEqual(OpenAIClient.streamEvent(fromLine: #"data: {"choices":[{"delta":{"content":"আমি"}}]}"#), .content("আমি"))
+        XCTAssertEqual(OpenAIClient.streamEvent(fromLine: "data: [DONE]"), .done)
+        XCTAssertNil(OpenAIClient.streamEvent(fromLine: #"data: {"choices":[{"delta":{"role":"assistant"}}]}"#))
+        XCTAssertNil(OpenAIClient.streamEvent(fromLine: ": keep-alive"))
+    }
+
+    func testStreamRequestFlag() throws {
+        let request = try OpenAIClient.makeRequest(input: "ami", apiKey: "k", model: "m", stream: true)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(json["stream"] as? Bool, true)
+        let plain = try OpenAIClient.makeRequest(input: "ami", apiKey: "k", model: "m")
+        let plainJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(plain.httpBody)) as? [String: Any])
+        XCTAssertNil(plainJSON["stream"])
+    }
+
+    func testCleanPartial() {
+        XCTAssertEqual(TransliterationPrompt.cleanPartial("\"আমি ভা"), "আমি ভা")
+        XCTAssertEqual(TransliterationPrompt.cleanPartial("```\nআমি"), "আমি")
+    }
+}
+
 final class KeyboardLayoutTests: XCTestCase {
     func testEveryLayoutHasThreeRowsWithBackspace() {
         for language in [KeyboardLanguage.english, .bangla] {

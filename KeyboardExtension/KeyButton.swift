@@ -8,6 +8,9 @@ struct KeyButton<Label: View>: View {
     var prominent = false
     /// Fires on touch-down and keeps firing while held (backspace).
     var repeats = false
+    /// Character shown in a magnified bubble above the key while pressed, like the system keyboard.
+    var popup: String? = nil
+    var popupFontSize: CGFloat = 23
     var action: () -> Void
     @ViewBuilder var label: () -> Label
 
@@ -23,8 +26,16 @@ struct KeyButton<Label: View>: View {
                 .padding(.vertical, KeyboardMetrics.keyVerticalInset)
             label()
                 .foregroundStyle(prominent ? Color.white : Color.primary)
+                .opacity(pressed && popup != nil ? 0 : 1)
         }
         .frame(width: width, height: KeyboardMetrics.rowHeight)
+        .overlay(alignment: .bottom) {
+            if pressed, let popup {
+                KeyPopup(text: popup, keyWidth: width, fontSize: popupFontSize)
+                    .allowsHitTesting(false)
+            }
+        }
+        .zIndex(pressed ? 1 : 0)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -47,7 +58,8 @@ struct KeyButton<Label: View>: View {
     private var background: Color {
         if prominent { return pressed ? KeyboardTheme.accent.opacity(0.7) : KeyboardTheme.accent }
         if special { return pressed ? KeyboardTheme.pressedSpecial : KeyboardTheme.specialKey }
-        return pressed ? KeyboardTheme.pressedKey : KeyboardTheme.key
+        // Character keys show the pop-up instead of darkening.
+        return pressed && popup == nil ? KeyboardTheme.pressedKey : KeyboardTheme.key
     }
 
     private func startRepeating() {
@@ -64,6 +76,30 @@ struct KeyButton<Label: View>: View {
     private func stopRepeating() {
         repeatTimer?.invalidate()
         repeatTimer = nil
+    }
+}
+
+/// The magnified bubble that rises above a pressed character key.
+private struct KeyPopup: View {
+    let text: String
+    let keyWidth: CGFloat
+    let fontSize: CGFloat
+
+    var body: some View {
+        let width = max(keyWidth - KeyboardMetrics.keySpacing, 30) + 14
+        Text(text)
+            .font(.system(size: fontSize * 1.45))
+            .minimumScaleFactor(0.6)
+            .lineLimit(1)
+            .foregroundStyle(Color.primary)
+            .frame(width: width, height: 52)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(KeyboardTheme.key)
+                    .shadow(color: .black.opacity(0.28), radius: 2, x: 0, y: 1)
+            )
+            // Sit just above the key's top edge.
+            .offset(y: -(KeyboardMetrics.rowHeight - KeyboardMetrics.keyVerticalInset))
     }
 }
 

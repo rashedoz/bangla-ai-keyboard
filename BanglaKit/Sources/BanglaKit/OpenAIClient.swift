@@ -54,22 +54,71 @@ public struct OpenAIClient: Transliterating {
         return try Self.parse(data: data, response: response)
     }
 
+    /// Streams the conversion, yielding the text accumulated so far after each chunk.
+    /// The last value yielded is the cleaned final output.
+    public func streamTransliteration(_ text: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let request = try Self.makeRequest(input: text, apiKey: apiKey, model: model, stream: true)
+                    let (bytes, response) = try await session.bytes(for: request)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        var body = Data()
+                        for try await byte in bytes { body.append(byte) }
+                        _ = try Self.parse(data: body, response: response) // throws the mapped error
+                    }
+                    var accumulated = ""
+                    for try await line in bytes.lines {
+                        guard let event = Self.streamEvent(fromLine: line) else { continue }
+                        guard case .content(let delta) = event else { break }
+                        accumulated += delta
+                        let partial = TransliterationPrompt.cleanPartial(accumulated)
+                        if !partial.isEmpty { continuation.yield(partial) }
+                    }
+                    let final = TransliterationPrompt.cleanOutput(accumulated)
+                    guard !final.isEmpty else { throw TransliterationError.emptyResponse }
+                    continuation.yield(final)
+                    continuation.finish()
+                } catch let error as TransliterationError {
+                    continuation.finish(throwing: error)
+                } catch {
+                    if Task.isCancelled {
+                        continuation.finish(throwing: CancellationError())
+                    } else {
+                        continuation.finish(throwing: TransliterationError.network(error.localizedDescription))
+                    }
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Opens the TLS connection to api.openai.com ahead of time so the first real request
+    /// doesn't pay for DNS + handshake. Sends no credentials.
+    public static func prewarm(session: URLSession = .shared) {
+        var request = URLRequest(url: URL(string: "https://api.openai.com/")!, timeoutInterval: 10)
+        request.httpMethod = "HEAD"
+        session.dataTask(with: request).resume()
+    }
+
     // MARK: - Request / response (pure, unit tested)
 
     struct RequestBody: Encodable {
         let model: String
         let messages: [ChatMessage]
         let temperature: Double
+        let stream: Bool?
     }
 
-    public static func makeRequest(input: String, apiKey: String, model: String) throws -> URLRequest {
+    public static func makeRequest(input: String, apiKey: String, model: String, stream: Bool = false) throws -> URLRequest {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw TransliterationError.missingAPIKey }
         var request = URLRequest(url: endpoint, timeoutInterval: 20)
         request.httpMethod = "POST"
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body = RequestBody(model: model, messages: TransliterationPrompt.messages(for: input), temperature: 0.2)
+        let body = RequestBody(model: model, messages: TransliterationPrompt.messages(for: input), temperature: 0.2,
+                               stream: stream ? true : nil)
         request.httpBody = try JSONEncoder().encode(body)
         return request
     }
@@ -85,6 +134,29 @@ public struct OpenAIClient: Transliterating {
     struct ErrorBody: Decodable {
         struct Detail: Decodable { let message: String? }
         let error: Detail
+    }
+
+    public enum StreamEvent: Equatable {
+        case content(String)
+        case done
+    }
+
+    struct StreamChunk: Decodable {
+        struct Choice: Decodable {
+            struct Delta: Decodable { let content: String? }
+            let delta: Delta
+        }
+        let choices: [Choice]
+    }
+
+    /// Parses one Server-Sent Events line from a streaming Chat Completions response.
+    public static func streamEvent(fromLine line: String) -> StreamEvent? {
+        guard line.hasPrefix("data:") else { return nil }
+        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        if payload == "[DONE]" { return .done }
+        guard let chunk = try? JSONDecoder().decode(StreamChunk.self, from: Data(payload.utf8)),
+              let content = chunk.choices.first?.delta.content, !content.isEmpty else { return nil }
+        return .content(content)
     }
 
     public static func parse(data: Data, response: URLResponse) throws -> String {

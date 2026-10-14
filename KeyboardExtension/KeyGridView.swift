@@ -1,15 +1,23 @@
 import BanglaKit
 import SwiftUI
 
-struct KeyGridView: View {
-    @ObservedObject var model: KeyboardModel
+/// The keys. Takes a value snapshot (`GridConfig`) and is `Equatable`, so SwiftUI skips
+/// re-rendering it while the user types into the compose bar.
+struct KeyGridView: View, Equatable {
+    let config: GridConfig
+    /// Not observed: actions only. Redraws are driven by `config`.
+    let model: KeyboardModel
+
+    static func == (lhs: KeyGridView, rhs: KeyGridView) -> Bool {
+        lhs.config == rhs.config
+    }
 
     var body: some View {
         GeometryReader { geo in
             let available = geo.size.width - KeyboardMetrics.sidePadding * 2
             let unit = available / 10
             VStack(spacing: 0) {
-                ForEach(Array(model.rows.enumerated()), id: \.offset) { _, row in
+                ForEach(Array(config.rows.enumerated()), id: \.offset) { _, row in
                     keyRow(row, available: available, unit: unit)
                 }
                 bottomRow(available: available, unit: unit)
@@ -29,6 +37,8 @@ struct KeyGridView: View {
                 KeyButton(width: rowUnit * key.width,
                           special: key.isSpecial,
                           repeats: key.action == .backspace,
+                          popup: popupText(for: key),
+                          popupFontSize: fontSize,
                           action: { model.tap(key) }) {
                     keyLabel(key)
                 }
@@ -37,11 +47,18 @@ struct KeyGridView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private var fontSize: CGFloat { config.language == .bangla ? 21 : 23 }
+
+    private func popupText(for key: KeySpec) -> String? {
+        if case .character(let value) = key.action { return value }
+        return nil
+    }
+
     @ViewBuilder
     private func keyLabel(_ key: KeySpec) -> some View {
         switch key.action {
         case .shift:
-            Image(systemName: model.shift == .locked ? "capslock.fill" : (model.shift == .once ? "shift.fill" : "shift"))
+            Image(systemName: config.shift == .locked ? "capslock.fill" : (config.shift == .once ? "shift.fill" : "shift"))
                 .font(.system(size: 18, weight: .medium))
         case .backspace:
             Image(systemName: "delete.left").font(.system(size: 18, weight: .medium))
@@ -49,7 +66,7 @@ struct KeyGridView: View {
             Text(key.label).font(.system(size: 15))
         case .character:
             Text(key.label)
-                .font(.system(size: model.state.displayLanguage == .bangla ? 21 : 23))
+                .font(.system(size: fontSize))
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
         }
@@ -57,15 +74,15 @@ struct KeyGridView: View {
 
     private func bottomRow(available: CGFloat, unit: CGFloat) -> some View {
         let layerWidth = unit * 1.25
-        let globeWidth = model.needsGlobeKey ? unit * 1.15 : 0
+        let globeWidth = config.needsGlobe ? unit * 1.15 : 0
         let modeWidth = unit * 1.25
         let returnWidth = unit * 2.1
         let spaceWidth = max(unit * 2, available - layerWidth - globeWidth - modeWidth - returnWidth)
         return HStack(spacing: 0) {
             KeyButton(width: layerWidth, special: true, action: model.toggleLayer) {
-                Text(model.layerKeyLabel).font(.system(size: 15))
+                Text(config.layerLabel).font(.system(size: 15))
             }
-            if model.needsGlobeKey {
+            if config.needsGlobe {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(KeyboardTheme.specialKey)
@@ -77,23 +94,15 @@ struct KeyGridView: View {
                 .frame(width: globeWidth, height: KeyboardMetrics.rowHeight)
             }
             KeyButton(width: modeWidth, special: true, action: model.modeKey) {
-                Text(model.modeKeyLabel).font(.system(size: 15, weight: .semibold))
+                Text(config.modeLabel).font(.system(size: 15, weight: .semibold))
             }
             KeyButton(width: spaceWidth, action: model.space) {
-                Text(spaceLabel).font(.system(size: 15)).foregroundStyle(.secondary)
+                Text(config.spaceLabel).font(.system(size: 15)).foregroundStyle(.secondary)
             }
-            KeyButton(width: returnWidth, special: true, prominent: model.returnIsProminent, action: model.returnKey) {
-                Text(model.returnLabel).font(.system(size: 15, weight: model.returnIsProminent ? .semibold : .regular))
+            KeyButton(width: returnWidth, special: true, prominent: config.returnProminent, action: model.returnKey) {
+                Text(config.returnLabel).font(.system(size: 15, weight: config.returnProminent ? .semibold : .regular))
             }
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private var spaceLabel: String {
-        switch model.state.mode {
-        case .ai: return model.state.phase == .editing ? "বাংলা (edit)" : "Banglish → বাংলা"
-        case .english: return "English"
-        case .bangla: return "বাংলা"
-        }
     }
 }

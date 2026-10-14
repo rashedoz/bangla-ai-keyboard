@@ -33,20 +33,53 @@ struct ComposeBarView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 barButton("text.insert", label: "Convert field text", action: model.useFieldText)
-            } else {
+            } else if state.preview.isEmpty {
                 (Text(state.source) + Text("|").foregroundColor(KeyboardTheme.accent))
                     .lineLimit(2)
                     .truncationMode(.head)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 barButton("xmark", label: "Clear", action: model.clear)
                 pillButton("Convert", icon: "sparkles", action: model.convert)
+            } else {
+                // Live preview: what you typed on top, the Bangla below. Dimmed while it catches up.
+                VStack(alignment: .leading, spacing: 1) {
+                    (Text(state.source) + Text("|").foregroundColor(KeyboardTheme.accent))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                    Text(state.preview)
+                        .font(.system(size: 18))
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .opacity(state.isPreviewFresh ? 1 : 0.45)
+                        .animation(.easeOut(duration: 0.12), value: state.isPreviewFresh)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if state.isPreviewFresh {
+                    barButton("pencil", label: "Edit", action: model.edit)
+                    barButton("xmark", label: "Clear", action: model.clear)
+                    pillButton("Insert", icon: nil, action: model.insertResult)
+                } else {
+                    barButton("xmark", label: "Clear", action: model.clear)
+                    pillButton("Convert", icon: "sparkles", action: model.convert)
+                }
             }
         case .converting:
-            Text(state.source)
-                .lineLimit(1)
-                .truncationMode(.head)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(state.source)
+                    .font(state.result.isEmpty ? .body : .caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                if !state.result.isEmpty {
+                    Text(state.result)
+                        .font(.system(size: 18))
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             ProgressView()
             barButton("xmark", label: "Cancel", action: model.clear)
         case .result:
@@ -135,7 +168,8 @@ struct KeyboardRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             ComposeBarView(model: model)
-            KeyGridView(model: model)
+            KeyGridView(config: model.gridConfig, model: model)
+                .equatable()
         }
         .frame(height: KeyboardMetrics.totalHeight, alignment: .top)
     }

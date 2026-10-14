@@ -41,6 +41,8 @@ public enum ComposerEffect: Equatable, Sendable {
     /// Delete `deleteCount` characters before the cursor, then insert `text`.
     case replaceBeforeCursor(deleteCount: Int, text: String)
     case convert(text: String, requestID: Int)
+    /// Background conversion for the live preview while the user is still typing.
+    case preview(text: String, requestID: Int)
 }
 
 /// Pure state machine behind the keyboard. No UIKit, so it is unit tested.
@@ -58,6 +60,12 @@ public struct ComposerState: Equatable, Sendable {
     /// Characters in the host field that `source` was pulled from and should be replaced on insert.
     public private(set) var replaceCount: Int = 0
     public private(set) var requestID: Int = 0
+    /// Live preview of `source`, converted in the background while composing.
+    public private(set) var preview: String = ""
+    /// The `source` that `preview` was produced from; empty while a preview is streaming in.
+    public private(set) var previewSource: String = ""
+    public private(set) var previewRequestID: Int = 0
+    private var pendingPreviewSource: String = ""
 
     public init(mode: InputMode = .ai) {
         self.mode = mode
@@ -74,6 +82,11 @@ public struct ComposerState: Equatable, Sendable {
 
     public var isComposing: Bool { mode == .ai }
     public var hasSource: Bool { !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    /// True when the preview matches exactly what is typed, so it can be inserted with no wait.
+    public var isPreviewFresh: Bool {
+        mode == .ai && phase == .composing && !preview.isEmpty && previewSource == source
+    }
 
     /// Text before / after the cursor while editing the result.
     public var resultParts: (before: String, after: String) {
@@ -130,7 +143,13 @@ public struct ComposerState: Equatable, Sendable {
         default:
             guard !source.isEmpty else { return .deleteBackward }
             source.removeLast()
-            if source.isEmpty { replaceCount = 0 }
+            if source.isEmpty {
+                replaceCount = 0
+                preview = ""
+                previewSource = ""
+                pendingPreviewSource = ""
+                previewRequestID += 1
+            }
             invalidateResult()
             return .none
         }
@@ -148,6 +167,8 @@ public struct ComposerState: Equatable, Sendable {
             return insert(trailingSpace: false)
         case .converting:
             return .none
+        case .composing where isPreviewFresh:
+            return insert(trailingSpace: false)
         case .composing, .error:
             return hasSource ? convert() : .insert("\n")
         }
@@ -159,6 +180,7 @@ public struct ComposerState: Equatable, Sendable {
         case .editing: return "Done"
         case .result: return "Insert"
         case .converting: return "…"
+        case .composing where isPreviewFresh: return "Insert"
         case .composing, .error: return hasSource ? "Convert" : "return"
         }
     }
@@ -167,9 +189,62 @@ public struct ComposerState: Equatable, Sendable {
 
     public mutating func convert() -> ComposerEffect {
         guard mode == .ai, hasSource, phase != .converting else { return .none }
+        if isPreviewFresh {
+            acceptPreview()
+            return .none
+        }
         requestID += 1
         phase = .converting
+        result = ""
         return .convert(text: source, requestID: requestID)
+    }
+
+    /// Starts a background conversion of what is typed so far, unless the preview is already current.
+    public mutating func requestPreview() -> ComposerEffect {
+        guard mode == .ai, phase == .composing, hasSource, !isPreviewFresh,
+              source != pendingPreviewSource else { return .none }
+        previewRequestID += 1
+        pendingPreviewSource = source
+        return .preview(text: source, requestID: previewRequestID)
+    }
+
+    /// Partial preview text while it streams in.
+    public mutating func previewProgress(_ text: String, requestID id: Int) {
+        guard id == previewRequestID, mode == .ai, phase == .composing else { return }
+        preview = text
+        previewSource = ""
+    }
+
+    public mutating func previewSucceeded(_ text: String, requestID id: Int) {
+        guard id == previewRequestID, mode == .ai, phase == .composing else { return }
+        preview = text
+        previewSource = pendingPreviewSource
+        pendingPreviewSource = ""
+    }
+
+    /// A failed preview is silent; the user can still tap Convert to see the error.
+    public mutating func previewFailed(requestID id: Int) {
+        guard id == previewRequestID else { return }
+        pendingPreviewSource = ""
+    }
+
+    /// Partial result while an explicit conversion streams in.
+    public mutating func conversionProgress(_ text: String, requestID id: Int) {
+        guard id == requestID, phase == .converting else { return }
+        result = text
+    }
+
+    /// Promotes the fresh preview to the editable result.
+    private mutating func acceptPreview() {
+        result = preview
+        resultCursor = preview.unicodeScalars.count
+        phase = .result
+    }
+
+    /// Opens the fresh preview (or result) for editing.
+    public mutating func editPreview() {
+        if isPreviewFresh { acceptPreview() }
+        startEditing()
     }
 
     /// Pulls existing Banglish from the host field (text on the current line before the cursor)
@@ -212,6 +287,7 @@ public struct ComposerState: Equatable, Sendable {
     }
 
     public mutating func insert(trailingSpace: Bool) -> ComposerEffect {
+        if isPreviewFresh { acceptPreview() }
         guard mode == .ai, phase == .result || phase == .editing, !result.isEmpty else { return .none }
         let text = trailingSpace ? result + " " : result
         let count = replaceCount
@@ -225,7 +301,11 @@ public struct ComposerState: Equatable, Sendable {
         resultCursor = 0
         replaceCount = 0
         phase = .composing
+        preview = ""
+        previewSource = ""
+        pendingPreviewSource = ""
         requestID += 1 // drop any in-flight response
+        previewRequestID += 1
     }
 
     // MARK: - Helpers

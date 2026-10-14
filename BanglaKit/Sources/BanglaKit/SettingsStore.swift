@@ -11,6 +11,7 @@ public struct SettingsStore {
         static let keyClicks = "keyClicks"
         static let haptics = "haptics"
         static let spaceAfterInsert = "spaceAfterInsert"
+        static let livePreview = "livePreview"
     }
 
     public var defaults: UserDefaults
@@ -45,5 +46,11 @@ public struct SettingsStore {
     public var spaceAfterInsert: Bool {
         get { defaults.object(forKey: Key.spaceAfterInsert) as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: Key.spaceAfterInsert) }
+    }
+
+    /// Convert in the background whenever the user pauses typing in AI mode.
+    public var livePreview: Bool {
+        get { defaults.object(forKey: Key.livePreview) as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: Key.livePreview) }
     }
 }

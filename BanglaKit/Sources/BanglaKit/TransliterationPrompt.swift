@@ -40,6 +40,14 @@ public enum TransliterationPrompt {
         return messages
     }
 
+    /// Light cleanup for text that is still streaming in: drops a leading fence/quote.
+    public static func cleanPartial(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("```") { text = String(text.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines) }
+        while let first = text.first, "\"“'‘`".contains(first) { text.removeFirst() }
+        return text
+    }
+
     /// Strips wrapping quotes / code fences / whitespace a model may add despite instructions.
     public static func cleanOutput(_ raw: String) -> String {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)

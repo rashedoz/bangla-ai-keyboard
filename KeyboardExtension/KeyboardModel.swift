@@ -6,19 +6,45 @@ enum ShiftState {
     case off, once, locked
 }
 
+/// Everything the key grid needs to draw itself. The grid only re-renders when this changes,
+/// so typing into the compose bar doesn't redraw every key.
+struct GridConfig: Equatable {
+    var rows: [[KeySpec]]
+    var language: KeyboardLanguage
+    var shift: ShiftState
+    var layerLabel: String
+    var modeLabel: String
+    var returnLabel: String
+    var returnProminent: Bool
+    var needsGlobe: Bool
+    var spaceLabel: String
+}
+
 @MainActor
 final class KeyboardModel: ObservableObject {
     @Published private(set) var state: ComposerState
     @Published private(set) var shift: ShiftState = .off
     @Published private(set) var layer: KeyboardLayer = .letters
-    @Published var needsGlobeKey = true
+    @Published private(set) var needsGlobeKey = true
     @Published private(set) var hasFullAccess = false
 
     weak var controller: UIInputViewController?
     private let settings = SettingsStore()
     private var conversionTask: Task<Void, Never>?
+    private var previewTask: Task<Void, Never>?
     private var lastShiftTap = Date.distantPast
-    private lazy var haptic = UIImpactFeedbackGenerator(style: .light)
+    private let haptic = UIImpactFeedbackGenerator(style: .light)
+
+    // Settings are read once per appearance, not on every key press.
+    private var keyClicks = true
+    private var haptics = true
+    private var livePreview = true
+    private var spaceAfterInsert = true
+    private var model = SettingsStore.defaultModel
+    private var apiKey: String?
+
+    /// Pause after the last keystroke before a live preview request is sent.
+    private let previewDelay: Duration = .milliseconds(350)
 
     init(controller: UIInputViewController) {
         self.controller = controller
@@ -27,45 +53,67 @@ final class KeyboardModel: ObservableObject {
 
     private var proxy: UITextDocumentProxy? { controller?.textDocumentProxy }
 
-    func refreshEnvironment() {
-        hasFullAccess = controller?.hasFullAccess ?? false
-        needsGlobeKey = controller?.needsInputModeSwitchKey ?? true
+    /// Called when the keyboard appears: reload settings and open the network connection early.
+    func keyboardWillAppear() {
+        updateEnvironment()
+        keyClicks = settings.keyClicks
+        haptics = settings.haptics
+        livePreview = settings.livePreview
+        spaceAfterInsert = settings.spaceAfterInsert
+        model = settings.model
+        apiKey = hasFullAccess ? APIKeyStore().load() : nil
+        if haptics && hasFullAccess { haptic.prepare() }
+        if hasFullAccess && apiKey != nil && state.mode == .ai { OpenAIClient.prewarm() }
+    }
+
+    /// Cheap check that only publishes when something actually changed.
+    func updateEnvironment() {
+        let access = controller?.hasFullAccess ?? false
+        let globe = controller?.needsInputModeSwitchKey ?? true
+        if access != hasFullAccess { hasFullAccess = access }
+        if globe != needsGlobeKey { needsGlobeKey = globe }
     }
 
     // MARK: - Derived
 
-    var rows: [[KeySpec]] {
-        KeyboardLayouts.rows(language: state.displayLanguage, layer: layer, shifted: shift != .off)
+    var gridConfig: GridConfig {
+        let language = state.displayLanguage
+        return GridConfig(
+            rows: KeyboardLayouts.rows(language: language, layer: layer, shifted: shift != .off),
+            language: language,
+            shift: shift,
+            layerLabel: layer == .letters
+                ? KeyboardLayouts.numbersLabel(for: language)
+                : KeyboardLayouts.lettersLabel(for: language),
+            modeLabel: state.phase == .editing
+                ? (state.editLanguage == .bangla ? "EN" : "বাং")
+                : state.mode.next.shortLabel,
+            returnLabel: state.returnLabel,
+            returnProminent: state.mode == .ai && ["Convert", "Insert", "Done"].contains(state.returnLabel),
+            needsGlobe: needsGlobeKey,
+            spaceLabel: spaceLabel
+        )
     }
 
-    var layerKeyLabel: String {
-        layer == .letters
-            ? KeyboardLayouts.numbersLabel(for: state.displayLanguage)
-            : KeyboardLayouts.lettersLabel(for: state.displayLanguage)
-    }
-
-    var modeKeyLabel: String {
-        if state.phase == .editing {
-            return state.editLanguage == .bangla ? "EN" : "বাং"
+    private var spaceLabel: String {
+        switch state.mode {
+        case .ai: return state.phase == .editing ? "বাংলা (edit)" : "Banglish → বাংলা"
+        case .english: return "English"
+        case .bangla: return "বাংলা"
         }
-        return state.mode.next.shortLabel
-    }
-
-    var returnLabel: String { state.returnLabel }
-
-    var returnIsProminent: Bool {
-        state.mode == .ai && ["Convert", "Insert", "Done"].contains(state.returnLabel)
     }
 
     // MARK: - Keys
 
     func tap(_ key: KeySpec) {
-        feedback()
         switch key.action {
         case .character(let value):
+            feedback()
             apply(state.type(value))
             if shift == .once { shift = .off }
+            schedulePreview()
         case .shift:
+            feedback()
             let now = Date()
             if shift == .locked {
                 shift = .off
@@ -78,6 +126,7 @@ final class KeyboardModel: ObservableObject {
         case .backspace:
             backspace()
         case .layer(let newLayer):
+            feedback()
             layer = newLayer
         }
     }
@@ -85,17 +134,19 @@ final class KeyboardModel: ObservableObject {
     func backspace() {
         feedback()
         apply(state.backspace())
+        schedulePreview()
     }
 
     func space() {
         feedback()
         apply(state.type(" "))
         if layer != .letters { layer = .letters }
+        schedulePreview()
     }
 
     func returnKey() {
         feedback()
-        if state.mode == .ai && state.phase == .result {
+        if state.mode == .ai && (state.phase == .result || state.isPreviewFresh) {
             insertResult()
         } else {
             apply(state.returnKey())
@@ -116,28 +167,33 @@ final class KeyboardModel: ObservableObject {
             state.cycleMode()
             settings.lastMode = state.mode
         }
-        shift = .off
-        layer = .letters
+        if shift != .off { shift = .off }
+        if layer != .letters { layer = .letters }
     }
 
     func switchToAI() {
         state.setMode(.ai)
         settings.lastMode = .ai
-        layer = .letters
+        if layer != .letters { layer = .letters }
     }
 
     // MARK: - Compose bar
 
-    func convert() { apply(state.convert()) }
+    func convert() {
+        previewTask?.cancel()
+        apply(state.convert())
+    }
 
     func insertResult() {
-        apply(state.insert(trailingSpace: settings.spaceAfterInsert))
+        previewTask?.cancel()
+        apply(state.insert(trailingSpace: spaceAfterInsert))
     }
 
     func edit() {
-        state.startEditing()
-        layer = .letters
-        shift = .off
+        previewTask?.cancel()
+        state.editPreview()
+        if layer != .letters { layer = .letters }
+        if shift != .off { shift = .off }
     }
 
     func finishEditing() { state.finishEditing() }
@@ -149,6 +205,7 @@ final class KeyboardModel: ObservableObject {
 
     func clear() {
         conversionTask?.cancel()
+        previewTask?.cancel()
         state.clear()
     }
 
@@ -171,35 +228,82 @@ final class KeyboardModel: ObservableObject {
             proxy?.insertText(text)
         case .convert(let text, let requestID):
             startConversion(text, requestID: requestID)
+        case .preview(let text, let requestID):
+            startPreview(text, requestID: requestID)
+        }
+    }
+
+    /// Debounces live previews: each keystroke restarts the timer.
+    private func schedulePreview() {
+        guard livePreview, state.mode == .ai, state.phase == .composing else { return }
+        previewTask?.cancel()
+        guard state.hasSource, !state.isPreviewFresh else { return }
+        previewTask = Task { [weak self, previewDelay] in
+            try? await Task.sleep(for: previewDelay)
+            guard !Task.isCancelled, let self else { return }
+            self.apply(self.state.requestPreview())
+        }
+    }
+
+    private func client() -> OpenAIClient? {
+        guard hasFullAccess else { return nil }
+        if apiKey == nil { apiKey = APIKeyStore().load() }
+        guard let apiKey else { return nil }
+        return OpenAIClient(apiKey: apiKey, model: model)
+    }
+
+    private func startPreview(_ text: String, requestID: Int) {
+        guard let client = client() else {
+            state.previewFailed(requestID: requestID)
+            return
+        }
+        previewTask = Task { [weak self] in
+            do {
+                var last = ""
+                for try await partial in client.streamTransliteration(text) {
+                    guard !Task.isCancelled else { return }
+                    last = partial
+                    self?.state.previewProgress(partial, requestID: requestID)
+                }
+                self?.state.previewSucceeded(last, requestID: requestID)
+            } catch {
+                self?.state.previewFailed(requestID: requestID)
+            }
         }
     }
 
     private func startConversion(_ text: String, requestID: Int) {
-        refreshEnvironment()
+        updateEnvironment()
         guard hasFullAccess else {
             state.conversionFailed(TransliterationError.noFullAccess.localizedDescription, requestID: requestID)
             return
         }
-        guard let key = APIKeyStore().load() else {
+        guard let client = client() else {
             state.conversionFailed(TransliterationError.missingAPIKey.localizedDescription, requestID: requestID)
             return
         }
-        let client = OpenAIClient(apiKey: key, model: settings.model)
         conversionTask?.cancel()
         conversionTask = Task { [weak self] in
             do {
-                let output = try await client.transliterate(text)
-                guard !Task.isCancelled else { return }
-                self?.state.conversionSucceeded(output, requestID: requestID)
+                var last = ""
+                for try await partial in client.streamTransliteration(text) {
+                    guard !Task.isCancelled else { return }
+                    last = partial
+                    self?.state.conversionProgress(partial, requestID: requestID)
+                }
+                self?.state.conversionSucceeded(last, requestID: requestID)
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
                 self?.state.conversionFailed(error.localizedDescription, requestID: requestID)
             }
         }
     }
 
     private func feedback() {
-        if settings.keyClicks { UIDevice.current.playInputClick() }
-        if settings.haptics && hasFullAccess { haptic.impactOccurred(intensity: 0.6) }
+        if keyClicks { UIDevice.current.playInputClick() }
+        if haptics && hasFullAccess {
+            haptic.impactOccurred(intensity: 0.6)
+            haptic.prepare()
+        }
     }
 }

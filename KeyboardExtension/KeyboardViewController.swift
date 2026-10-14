@@ -17,6 +17,10 @@ final class KeyboardViewController: UIInputViewController {
 
         let host = UIHostingController(rootView: KeyboardRootView(model: model))
         host.view.backgroundColor = .clear
+        // Fast typists press the next key before lifting the last one; without this
+        // the second touch is dropped.
+        host.view.isMultipleTouchEnabled = true
+        view.isMultipleTouchEnabled = true
         host.view.translatesAutoresizingMaskIntoConstraints = false
         addChild(host)
         view.addSubview(host.view)
@@ -35,16 +39,11 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        model.refreshEnvironment()
+        model.keyboardWillAppear()
     }
 
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
-        model.needsGlobeKey = needsInputModeSwitchKey
-    }
-
-    override func textDidChange(_ textInput: UITextInput?) {
-        super.textDidChange(textInput)
-        model.refreshEnvironment()
+        model.updateEnvironment()
     }
 }
