@@ -33,6 +33,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: Bangla AI
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         KeychainAccessGroup: "$(AppIdentifierPrefix)com.mirailit.BanglaKeyboard.shared"
